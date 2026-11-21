@@ -39,6 +39,45 @@
     if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Coffee assets require a web URL.');
     return url.href;
   }
+  async function wireCup(root, state) {
+    let cup, button, grip;
+    for (let attempt = 0; attempt < 40 && !state.cancelled; attempt++) {
+      root.Traverse(obj => {
+        if (obj.name === 'PickupCup') cup = obj;
+        if (obj.name === 'BrewButton') button = obj;
+        if (obj.name === 'Cup handle grip') grip = obj;
+      });
+      if (cup && button && grip) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (state.cancelled) return;
+    if (!cup || !button || !grip) throw new Error('Coffee cup controls did not register.');
+    let held = false, position, rotation, enabled;
+    let writes = Promise.resolve();
+    function update() {
+      if (state.cancelled) return;
+      const near = position && Math.hypot(position.x + .078867, position.y + .1253, position.z - .05258) < .022;
+      const upright = rotation && Math.abs((rotation.x + rotation.w) * Math.SQRT1_2) > .985;
+      const next = !!(near && upright && !held);
+      if (next === enabled) return;
+      enabled = next;
+      // Serialize rapid grab/drop/reset changes; never re-enable from stale pose alone.
+      writes = writes.then(() => state.cancelled ? undefined : button.SetActive(next))
+        .catch(error => console.error('[BLKXR coffee cup]', error));
+    }
+    const grab = () => { held = true; update(); };
+    const drop = () => { held = false; update(); };
+    for (const obj of [cup, grip]) { obj.On('grab', grab); obj.On('drop', drop); }
+    state.cleanup = () => {
+      for (const obj of [cup, grip]) { obj.Off('grab', grab); obj.Off('drop', drop); }
+    };
+    update();
+    await cup.WatchTransform([BS.PN.localPosition, BS.PN.localRotation], transform => {
+      if (transform.localPosition) position = transform.localPosition;
+      if (transform.localRotation) rotation = transform.localRotation;
+      update();
+    });
+  }
   async function add(el) {
     if (instances.has(el)) return;
     const state = { root: null, cancelled: false };
@@ -75,6 +114,8 @@
         if (!bounds || !bounds.size || !(bounds.size.y > 0)) {
           throw new Error('Coffee bundle finished loading but its prefab is missing.');
         }
+        await wireCup(root, state);
+        if (state.cancelled) return;
         el.gameObject = root;
         el.dataset.coffeeStatus = 'ready';
       }
@@ -84,6 +125,7 @@
         console.error('[BLKXR coffee]', error);
       }
       if (state.root) await state.root.Destroy();
+      state.cleanup?.();
       state.root = null;
     } finally {
       if (state.cancelled && state.root) {
@@ -97,6 +139,7 @@
     for (const [el, state] of instances) {
       if (el.isConnected) continue;
       state.cancelled = true;
+      state.cleanup?.();
       instances.delete(el);
       if (state.root && el.dataset.coffeeStatus === 'ready') {
         void state.root.Destroy();
