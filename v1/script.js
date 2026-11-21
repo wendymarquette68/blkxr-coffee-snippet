@@ -9,6 +9,21 @@
   const selector = 'bs-snippet[name="blkxr-coffee-maker"]';
   const instances = new Map();
   let scene;
+  async function addLoaded(root, component) {
+    let timer, onLoaded;
+    const loaded = new Promise((resolve, reject) => {
+      onLoaded = () => resolve();
+      component.On('loaded', onLoaded);
+      timer = setTimeout(() => reject(new Error('Coffee component load timed out.')), 60000);
+    });
+    try {
+      // AddComponent only links to Unity; wait for native loading as well.
+      await Promise.all([root.AddComponent(component), loaded]);
+    } finally {
+      clearTimeout(timer);
+      component.Off('loaded', onLoaded);
+    }
+  }
   function vector(value, fallback, scale = false) {
     if (!value) return new BS.Vector3(...fallback);
     let numbers = value.trim().split(/\s+/).map(Number);
@@ -44,18 +59,22 @@
       await root.Async();
       if (state.cancelled) return;
       await root.SetTransform(pose);
-      await root.AddComponent(new BS.AssetBundle({
+      await addLoaded(root, new BS.AssetBundle({
         windowsUrl: assetUrl(el, 'windows-url', 'windows/blkxr-coffee-maker.bundle'),
         androidUrl: assetUrl(el, 'android-url', 'android/blkxr-coffee-maker.bundle'),
         osxUrl: '', linuxUrl: '', iosUrl: '', vosUrl: '',
         isScene: false, legacyShaderFix: false
       }));
       if (state.cancelled) return;
-      await root.AddComponent(new BS.KitItem({
+      await addLoaded(root, new BS.KitItem({
         path: edition === 'selectable' ? 'blkxr-selectable.prefab' : 'blkxr-black-gold.prefab',
         resetTransform: false
       }));
       if (!state.cancelled) {
+        const bounds = await root.GetBounds(false);
+        if (!bounds || !bounds.size || !(bounds.size.y > 0)) {
+          throw new Error('Coffee bundle finished loading but its prefab is missing.');
+        }
         el.gameObject = root;
         el.dataset.coffeeStatus = 'ready';
       }
